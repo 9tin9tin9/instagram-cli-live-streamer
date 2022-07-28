@@ -42,15 +42,15 @@ var config_json_1 = require("./config.json");
 var stdout = process.stdout;
 var stdin = process.stdin;
 var PS1 = "> ";
-var stdinBuffer = "";
+var inputBuffer = "";
+var history = [];
+var historyIndex = 0;
 var ig = new instagram_private_api_1.IgApiClient();
 var broadcastId = "";
 var streamTime = 0; // seconds
 var viewerCount = 0;
 var globalComments = [];
 var pinnedCommentIndex = -1;
-// TODO:
-//     - implement pin()
 var commandTable = {
     comment: function (strings) { return __awaiter(void 0, void 0, void 0, function () {
         var comment;
@@ -151,16 +151,16 @@ function resolveTwoFA(err) {
                         "".concat(verificationMethod === '1' ? 'SMS' : 'TOTP'));
                     _b.label = 1;
                 case 1:
-                    if (!!(stdinBuffer.length === 6 &&
-                        /^[0-9\b]+$/.test(stdinBuffer))) return [3 /*break*/, 3];
+                    if (!!(inputBuffer.length === 6 &&
+                        /^[0-9\b]+$/.test(inputBuffer))) return [3 /*break*/, 3];
                     return [4 /*yield*/, snooze(500)];
                 case 2:
                     _b.sent();
                     return [3 /*break*/, 1];
                 case 3:
                     _b.trys.push([3, 5, , 6]);
-                    code = stdinBuffer;
-                    stdinBuffer = "";
+                    code = inputBuffer;
+                    inputBuffer = "";
                     insertLine("Verifying: " + code);
                     return [4 /*yield*/, ig.account.twoFactorLogin({
                             username: username,
@@ -197,16 +197,16 @@ function resolveChallenge() {
                     insertLine("Enter the 6 digit code sent to you");
                     _a.label = 3;
                 case 3:
-                    if (!!(stdinBuffer.length === 6 &&
-                        /^[0-9\b]+$/.test(stdinBuffer))) return [3 /*break*/, 5];
+                    if (!!(inputBuffer.length === 6 &&
+                        /^[0-9\b]+$/.test(inputBuffer))) return [3 /*break*/, 5];
                     return [4 /*yield*/, snooze(500)];
                 case 4:
                     _a.sent();
                     return [3 /*break*/, 3];
                 case 5:
                     _a.trys.push([5, 7, , 8]);
-                    code = stdinBuffer;
-                    stdinBuffer = "";
+                    code = inputBuffer;
+                    inputBuffer = "";
                     insertLine("Verifying: " + code);
                     return [4 /*yield*/, ig.challenge.sendSecurityCode(code)];
                 case 6:
@@ -355,7 +355,7 @@ function insertLine(string) {
         "[Pin] ".concat(comment.user.username, ": ").concat(comment.text) :
         "";
     var timeElapse = new Date(streamTime * 1000).toISOString().slice(11, 19);
-    var inputLine = "[".concat(timeElapse, "][").concat(viewerCount, "]").concat(PS1).concat(stdinBuffer);
+    var inputLine = "[".concat(timeElapse, "][").concat(viewerCount, "]").concat(PS1).concat(inputBuffer);
     var columns = process.stdout.columns;
     var rows = Math.ceil(pinnedCommentLine.length / columns) +
         Math.ceil(inputLine.length / columns);
@@ -382,8 +382,17 @@ function insertLine(string) {
 function snooze(ms) {
     return new Promise(function (resolve) { return setTimeout(resolve, ms); });
 }
+function lookupHistory(dir) {
+    var newIndex = dir === "up" ? historyIndex - 1 : historyIndex + 1;
+    var line = history[newIndex];
+    if (line !== undefined) {
+        historyIndex = newIndex;
+        inputBuffer = line;
+        insertLine("");
+    }
+}
 // TODO: support history
-function pushToStdinBuffer(unicode) {
+function onKeypress(unicode) {
     switch (unicode) {
         // ctrl-c
         case "\u0003":
@@ -391,20 +400,35 @@ function pushToStdinBuffer(unicode) {
         // ctrl-d | Enter
         case "\u0004":
         case "\u000d":
-            var buf = stdinBuffer;
-            stdinBuffer = "";
+            var buf = inputBuffer;
+            inputBuffer = "";
             insertLine(buf);
+            if (buf !== "") {
+                history.push(buf);
+                historyIndex = history.length - 1;
+            }
             return buf;
         // delete
         case "\u007F":
-            if (stdinBuffer != "") {
+            if (inputBuffer != "") {
                 stdout.write("\b \b");
-                stdinBuffer = stdinBuffer.slice(0, -1);
+                inputBuffer = inputBuffer.slice(0, -1);
             }
+            return "";
+        // do not respond to left and right arrow keys
+        case "\u001b[C":
+        case "\u001b[D":
+            return "";
+        // up and down
+        case "\u001b[A":
+            lookupHistory("up");
+            return "";
+        case "\u001b[B":
+            lookupHistory("down");
             return "";
         // all other characters
         default:
-            stdinBuffer += unicode;
+            inputBuffer += unicode;
             stdout.write(unicode);
             return "";
     }
@@ -422,7 +446,7 @@ function main() {
                     stdin.setEncoding("utf8");
                     // listen to keypress
                     stdin.on("data", function (c) {
-                        var line = pushToStdinBuffer(String(c));
+                        var line = onKeypress(String(c));
                         if (line != "") {
                             var _a = line.toString().match(/(?:[^\s"]+|"[^"]*")+/g), cmd = _a[0], argv = _a.slice(1);
                             try {
@@ -464,7 +488,11 @@ function main() {
                      * the next step will send a notification / start your stream for everyone to see
                      */
                     _c.sent();
-                    setInterval(function () { streamTime += 1; insertLine(""); }, 1000);
+                    setInterval(function () {
+                        streamTime += 1;
+                        // refresh prompt
+                        insertLine("");
+                    }, 1000);
                     lastCommentTs = 0;
                     lastSystemCommentTs = 0;
                     // enable the comments

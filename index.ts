@@ -14,7 +14,9 @@ import { account, live, } from "./config.json";
 const stdout = process.stdout;
 const stdin = process.stdin;
 const PS1 = "> ";
-let stdinBuffer = "";
+let inputBuffer = "";
+let history: string[] = [];
+let historyIndex = 0;
 
 const ig = new IgApiClient();
 let broadcastId = "";
@@ -23,8 +25,6 @@ let viewerCount = 0;
 let globalComments: LiveCommentsResponseCommentsItem[] = [];
 let pinnedCommentIndex = -1;
 
-// TODO:
-//     - implement pin()
 const commandTable = {
     comment: async (strings: string[]) => {
         let comment = ""
@@ -94,13 +94,13 @@ async function resolveTwoFA(err: IgLoginTwoFactorRequiredError){
 
     insertLine("Enter code received via " + 
                `${verificationMethod === '1' ? 'SMS' : 'TOTP'}`);
-    while(!(stdinBuffer.length === 6 &&
-          /^[0-9\b]+$/.test(stdinBuffer))) {
+    while(!(inputBuffer.length === 6 &&
+          /^[0-9\b]+$/.test(inputBuffer))) {
         await snooze(500);
     }
     try {
-        const code = stdinBuffer;
-        stdinBuffer = "";
+        const code = inputBuffer;
+        inputBuffer = "";
         insertLine("Verifying: " + code);
         await ig.account.twoFactorLogin({
             username,
@@ -122,14 +122,14 @@ async function resolveChallenge(){
     await ig.challenge.auto();
 
     insertLine("Enter the 6 digit code sent to you");
-    while(!(stdinBuffer.length === 6 &&
-          /^[0-9\b]+$/.test(stdinBuffer))) {
+    while(!(inputBuffer.length === 6 &&
+          /^[0-9\b]+$/.test(inputBuffer))) {
         await snooze(500);
     }
 
     try {
-        const code = stdinBuffer;
-        stdinBuffer = "";
+        const code = inputBuffer;
+        inputBuffer = "";
         insertLine("Verifying: " + code);
         await ig.challenge.sendSecurityCode(code);
 
@@ -234,7 +234,7 @@ function insertLine(string: string) {
         `[Pin] ${comment.user.username}: ${comment.text}` :
         "";
     const timeElapse = new Date(streamTime * 1000).toISOString().slice(11, 19);
-    const inputLine = `[${timeElapse}][${viewerCount}]${PS1}${stdinBuffer}`;
+    const inputLine = `[${timeElapse}][${viewerCount}]${PS1}${inputBuffer}`;
 
     const columns = process.stdout.columns;
     const rows = Math.ceil(pinnedCommentLine.length / columns) +
@@ -266,8 +266,18 @@ function snooze(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// TODO: support history
-function pushToStdinBuffer(unicode: string) {
+function lookupHistory(dir: "up" | "down"){
+    const newIndex = dir === "up" ? historyIndex - 1 : historyIndex + 1;
+    const line = history[newIndex];
+    if (line !== undefined){
+        historyIndex = newIndex;
+        inputBuffer = line;
+        insertLine("");
+    }
+}
+
+// TODO: move cursor with left and right arrow to insert characters
+function onKeypress(unicode: string) {
     switch (unicode) {
         // ctrl-c
         case "\u0003":
@@ -276,22 +286,40 @@ function pushToStdinBuffer(unicode: string) {
         // ctrl-d | Enter
         case "\u0004":
         case "\u000d":
-            const buf = stdinBuffer;
-            stdinBuffer = "";
+            const buf = inputBuffer;
+            inputBuffer = "";
             insertLine(buf);
+            if (buf !== ""){
+                history.push(buf);
+                historyIndex = history.length-1;
+            }
             return buf;
 
         // delete
         case "\u007F":
-            if (stdinBuffer != ""){
+            if (inputBuffer != ""){
                 stdout.write("\b \b");
-                stdinBuffer = stdinBuffer.slice(0, -1);
+                inputBuffer = inputBuffer.slice(0, -1);
             }
+            return "";
+
+        // do not respond to left and right arrow keys
+        case "\u001b[C":
+        case "\u001b[D":
+            return "";
+
+        // up and down
+        case "\u001b[A":
+            lookupHistory("up");
+            return "";
+            
+        case "\u001b[B":
+            lookupHistory("down");
             return "";
 
         // all other characters
         default:
-            stdinBuffer += unicode;
+            inputBuffer += unicode;
             stdout.write(unicode);
             return "";
     }
@@ -304,7 +332,7 @@ async function main() {
     stdin.setEncoding("utf8");
     // listen to keypress
     stdin.on("data", c => {
-        const line = pushToStdinBuffer(String(c));
+        const line = onKeypress(String(c));
 
         if (line != ""){
             const [cmd, ...argv] =
@@ -342,7 +370,11 @@ async function main() {
      * the next step will send a notification / start your stream for everyone to see
      */
     await ig.live.start(broadcast_id);
-    setInterval(() => { streamTime += 1; insertLine(""); }, 1000);
+    setInterval(() => {
+        streamTime += 1;
+        // refresh prompt
+        insertLine("");
+    }, 1000);
 
     // initial comment-timestamp = 0, get all comments
     let lastCommentTs = 0;
