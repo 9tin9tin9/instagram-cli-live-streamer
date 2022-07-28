@@ -1,0 +1,11 @@
+{
+    "account": {
+        "username": "username",
+        "password": "password"
+    },
+    "live": {
+        "width": 720,
+        "height": 1280,
+        "message": ""
+    }
+}
